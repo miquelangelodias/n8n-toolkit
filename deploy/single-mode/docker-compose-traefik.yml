@@ -1,0 +1,79 @@
+services: 
+  traefik:
+    image: traefik:v3.6.13 
+    container_name: traefik
+    restart: always
+    command:
+      # ── API / Dashboard ───────────────────────
+      - "--api.dashboard=false"
+      # EntryPoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - --entrypoints.web.http.redirections.entrypoint.permanent=true # 2026-08-09
+      # Providers
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=proxy"
+      # # ACME (production)
+      # - "--certificatesresolvers.le.acme.email=${SSL_EMAIL}"
+      # - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      # - "--certificatesresolvers.le.acme.tlschallenge=true"
+      # ── TLS / Let's Encrypt ─────────────────── # 2026-08-09
+      - --entrypoints.websecure.http.tls.certresolver=letsencrypt
+      - --entrypoints.websecure.http.tls.options=tls-secure@file
+      - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      # Logs
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      - --log.format=json # 2026-08-09
+      - --accesslog.filepath=/logs/access.log # 2026-08-09
+      - --accesslog.format=json # 2026-08-09
+      # Health check
+      # - "--ping=true"
+      # - "--ping.entrypoint=traefikping"
+      # - "--entrypoints.traefikping.address=:8082"
+      # Prometheus metrics
+      - "--metrics.prometheus=true"
+      - "--metrics.prometheus.addEntryPointsLabels=true"
+      - "--metrics.prometheus.addRoutersLabels=true"
+      - "--metrics.prometheus.addServicesLabels=true"
+      - "--entrypoints.metrics.address=:8081"
+      - "--metrics.prometheus.entryPoint=metrics"
+    labels: # 2026-08-09
+      - traefik.enable=true # 2026-08-09
+      - traefik.docker.network=proxy # 2026-08-09
+
+      # ── promtail ──────────────────────────────────
+      - logging=promtail # 2026-08-09
+      - service=traefik # 2026-08-09
+      - env=production # 2026-08-09
+
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt # 2026-08-09
+      #- ./secrets/htpasswd:/etc/traefik/htpasswd:ro
+      - ./traefik:/etc/traefik:ro # 2026-08-09
+    networks: 
+      - proxy # 2026-08-09
+      - backend # 2026-08-09
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+ 
+networks:
+  backend:
+    external: true
+  proxy:
+    external: true
