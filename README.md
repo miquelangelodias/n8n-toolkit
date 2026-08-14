@@ -62,6 +62,13 @@
 - **Email notifications** — Gmail SMTP via `msmtp`; attach logs on failure (optional on success).
 - **Strong UX & logging** — per-run logs under `logs/`, `--log-level DEBUG` tracing, graceful error/interrupt traps, and a rolling `backups/backup_summary.md` dashboard.
 
+### Modifications by Miquelangelo:
+
+- Stable versions, today.
+- More security configurations.
+- Grafana accessible via dashboard.example.com.
+- Additional steps are required for further improvements.
+
 ---
 
 ## Repository Layout
