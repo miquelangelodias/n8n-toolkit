@@ -5,9 +5,11 @@ networks:
   proxy:
     name: proxy              # Força nome exato, sem prefixo do projeto
     external: true           # Rede criada externamente (docker network create proxy)
+    driver: bridge
   backend:
     name: backend
-    external: true
+    external: true    
+    driver: bridge
 
 volumes:
   # ═══════════════════════════════════════════════════════════════
@@ -23,9 +25,10 @@ volumes:
 
 services:
   traefik:
-    image: traefik:v3.6.13 
+    image: traefik:v3.6.13 # v2.11 -> v3.6.13
     container_name: traefik
     restart: always
+    env_file: [.env]
     security_opt: [no-new-privileges:true]
     networks: [ proxy, backend ] # 2026-08-09
     ports: [ "80:80", "443:443" ]
@@ -34,6 +37,7 @@ services:
       - ./letsencrypt:/letsencrypt # 2026-08-09
       - ./traefik:/etc/traefik:ro # arquivo de configuração - 2026-08-09
       - ./logs/traefik:/var/log/traefik:rw
+      - ./secrets/htpasswd:/etc/traefik/htpasswd:ro
     command:
       # ── API / Dashboard ───────────────────────
       - --api.dashboard=false
@@ -54,7 +58,6 @@ services:
       - --providers.docker.endpoint=tcp://docker-socket-proxy:2375 # ALTERADO: usa o proxy em vez do socket Docker direto.
       # ── TLS / Let's Encrypt ─────────────────── # 2026-08-09
       - --entrypoints.websecure.http.tls.certresolver=letsencrypt
-      - --entrypoints.websecure.http.tls.options=tls-secure@file
       #- --entrypoints.websecure.http.tls.options=tls-secure@file
       - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL}
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
@@ -88,7 +91,10 @@ services:
       # Global
       - --global.sendAnonymousUsage=false
       - --global.checkNewVersion=false
-
+      # promtail
+      - logging=promtail # 2026-08-09
+      - service=traefik # 2026-08-09
+      - env=production # 2026-08-09
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     depends_on:
@@ -109,22 +115,21 @@ services:
       options: {max-size: "20m", max-file: "5"}
 
   postgres:
-    image: postgres:17.6-alpine
+    image: postgres:17.6-alpine # 15.7 -> 17.6-alpine
     container_name: postgres
     restart: unless-stopped
+    env_file: [.env]
     security_opt: [no-new-privileges:true]
     networks: [ backend ]
     volumes:
       - data_postgres:/var/lib/postgresql/data
     environment:
       - TZ=${TZ}
-      - POSTGRES_USER=${DB_POSTGRESDB_USER}
-      - POSTGRES_PASSWORD=${DB_POSTGRESDB_PASSWORD}
-      - POSTGRES_DB=${DB_POSTGRESDB_DATABASE}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       start_period: 20s
@@ -135,49 +140,52 @@ services:
       - service=postgres
       - env=production
 
-  redis:
-    image: redis:7.4-alpine
-    container_name: redis
-    restart: unless-stopped
-    security_opt: [no-new-privileges:true]
-    networks: [ backend ]
-    volumes:
-      - data_redis:/data
-    command:
-      - redis-server
-      - --appendonly yes
-      - --requirepass ${REDIS_PASSWORD}
-      - --maxmemory 512mb
-      - --maxmemory-policy allkeys-lru
-      # ── Segurança: desabilita comandos perigosos ──
-      - --rename-command FLUSHALL ""
-      - --rename-command FLUSHDB ""
-      - --rename-command CONFIG ""
-      - --rename-command DEBUG ""
-      - --rename-command SHUTDOWN ""
-      # ── Persistência: snapshots ──
-      - --save 900 1
-      - --save 300 10
-      - --save 60 10000
-      - --protected-mode yes
-    environment:
-      - TZ=${TZ}
-    healthcheck:
-      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "PING" ]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-    labels:
-      # ── promtail ──────────────────────────────────
-      - logging=promtail
-      - service=redis
-      - env=production
+  # Used queue only
+  # redis:
+  #   image: redis:7.4-alpine
+  #   container_name: redis
+  #   restart: unless-stopped
+  #   env_file: [.env]
+  #   security_opt: [no-new-privileges:true]
+  #   networks: [ backend ]
+  #   volumes:
+  #     - data_redis:/data
+  #   command:
+  #     - redis-server
+  #     - --appendonly yes
+  #     - --requirepass ${REDIS_PASSWORD}
+  #     - --maxmemory 512mb
+  #     - --maxmemory-policy allkeys-lru
+  #     # ── Segurança: desabilita comandos perigosos ──
+  #     - --rename-command FLUSHALL ""
+  #     - --rename-command FLUSHDB ""
+  #     - --rename-command CONFIG ""
+  #     - --rename-command DEBUG ""
+  #     - --rename-command SHUTDOWN ""
+  #     # ── Persistência: snapshots ──
+  #     - --save 900 1
+  #     - --save 300 10
+  #     - --save 60 10000
+  #     - --protected-mode yes
+  #   environment:
+  #     - TZ=${TZ}
+  #   healthcheck:
+  #     test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "PING" ]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 5
+  #   labels:
+  #     # ── promtail ──────────────────────────────────
+  #     - logging=promtail
+  #     - service=redis
+  #     - env=production
   
   # n8n (single mode)
   n8n:
     image: n8nio/n8n:2.33.7-e21f9f1 # version stable 07/08/2026
     container_name: n8n
     restart: unless-stopped
+    env_file: [.env]
     security_opt: [no-new-privileges:true]
     #user: "1000:1000"
     networks: [ proxy, backend ] 
@@ -189,7 +197,7 @@ services:
     environment:
       - NODE_OPTIONS=" --no-deprecation"
       - NODE_ENV=production
-      #- N8N_RUNNERS_ENABLED=true
+      - N8N_RUNNERS_ENABLED=true
       - N8N_RESTRICT_FILE_ACCESS_TO=/files
       - N8N_SECURE_COOKIE="true"
       - N8N_PUBLIC_API_DISABLED="true"
@@ -212,12 +220,12 @@ services:
       - TZ=${TZ:-America/Sao_Paulo}
       # ── Banco de dados ────────────────────────
       - DB_TYPE=${DB_TYPE:-postgresdb}
-      - DB_POSTGRESDB_HOST=${DB_POSTGRESDB_HOST:-postgres}
-      - DB_POSTGRESDB_PORT=${DB_POSTGRESDB_PORT:-5432}
-      - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE:-n8n}
-      - DB_POSTGRESDB_USER=${DB_POSTGRESDB_USER}
-      - DB_POSTGRESDB_PASSWORD=${DB_POSTGRESDB_PASSWORD}
-      - DB_POSTGRESDB_SCHEMA=${DB_POSTGRESDB_SCHEMA:-public}
+      - DB_POSTGRESDB_HOST=${POSTGRES_HOST:-postgres}
+      - DB_POSTGRESDB_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-n8n}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_POSTGRESDB_SCHEMA=${POSTGRES_SCHEMA:-public}
       # ── Redis ─────────────────────────────────
       - N8N_REDIS_HOST=redis
       - N8N_REDIS_PORT=6379
@@ -257,7 +265,7 @@ services:
       - N8N_LOG_FILE_MAXCOUNT=60
     depends_on: 
       postgres: {condition: service_healthy}
-      redis: {condition: service_healthy}
+      #redis: {condition: service_healthy} # queue
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://n8n:${N8N_PORT:-5678}/healthz || exit 1"]
       interval: 10s
@@ -266,7 +274,7 @@ services:
       retries: 5
     labels:
       - traefik.enable=true
-        #- traefik.docker.network=proxy
+      - traefik.docker.network=proxy
       # Router & TLS
       - traefik.http.routers.n8n.rule=Host(`${N8N_HOST}`) && !PathPrefix(`/metrics`) # && !PathPrefix(`/healthz`)
       - traefik.http.routers.n8n.entrypoints=websecure
@@ -276,11 +284,11 @@ services:
       - traefik.http.routers.n8n.service=n8n
       - traefik.http.services.n8n.loadbalancer.server.port=${N8N_PORT:-5678}
       # Middlewares
-      - traefik.http.routers.n8n.middlewares=n8n-headers,n8n-rate #,n8n@docker #,n8n-retry #,n8n-compress
+      - traefik.http.routers.n8n.middlewares=n8n-headers,n8n-rate,n8n@docker,n8n-retry,n8n-compress
       # Security headers
       - traefik.http.middlewares.n8n-headers.headers.SSLRedirect=true
       - traefik.http.middlewares.n8n-headers.headers.STSSeconds=315360000
-      #- traefik.http.middlewares.n8n-headers.headers.stsSeconds=315360000
+      - traefik.http.middlewares.n8n-headers.headers.stsSeconds=315360000
       - traefik.http.middlewares.n8n-headers.headers.browserXssFilter=true
       - traefik.http.middlewares.n8n-headers.headers.contentTypeNosniff=true
       - traefik.http.middlewares.n8n-headers.headers.frameDeny=true
@@ -295,7 +303,7 @@ services:
       - traefik.http.middlewares.n8n-rate.ratelimit.period=3s
       # Retry & compression
       - traefik.http.middlewares.n8n-retry.retry.attempts=3
-      #- traefik.http.middlewares.n8n-compress.compress=false
+      - traefik.http.middlewares.n8n-compress.compress=false
 
       ############################################################
       # Aplica middleware de tratamento de erros ao router HTTPS
@@ -326,11 +334,11 @@ services:
   # ===== Monitoring (enabled by COMPOSE_PROFILES=monitoring) =====
   prometheus:
     profiles: ["monitoring"]
-    image: prom/prometheus:v3.13.2
+    image: prom/prometheus:v3.13.2 #v2.54.1
     container_name: prometheus
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
-    networks: [ proxy, backend ]
+    networks: [ backend ]
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - data_prometheus:/prometheus
@@ -348,6 +356,7 @@ services:
       start_period: 30s
       retries: 5
     labels:
+      - traefik.enable=false
       # ── promtail ──────────────────────────────────
       - logging=promtail
       - service=prometheus
@@ -355,9 +364,10 @@ services:
 
   grafana:
     profiles: ["monitoring"]
-    image: grafana/grafana:12.4.6-ubuntu
+    image: grafana/grafana:12.4.6-ubuntu # 11.2.0
     container_name: grafana
     restart: always
+    env_file: [.env]
     security_opt: [no-new-privileges:true]
     networks: [ proxy, backend ] 
     volumes:
@@ -367,7 +377,7 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards 
     environment:
       - GF_SERVER_ROOT_URL=https://${GF_HOST}
-      - GF_SERVER_DOMAIN=https://${GF_HOST}
+      - GF_SERVER_DOMAIN=${GF_HOST}
       - GF_SERVER_ENFORCE_DOMAIN=false
       - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER:-suporte}
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
@@ -383,9 +393,10 @@ services:
       - GF_SECURITY_COOKIE_SECURE=true
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
       - TZ=${TZ:-America/Sao_Paulo}
-    depends_on: [prometheus]
+    depends_on: 
+      prometheus: {condition: service_healthy} 
     labels:
-      - traefik.enable=true
+      - traefik.enable=true 
       - traefik.docker.network=proxy
       # Router & TLS
       - traefik.http.routers.grafana.rule=Host(`${GF_HOST}`) && !PathPrefix(`/metrics`) # && !PathPrefix(`/healthz`)
@@ -398,11 +409,11 @@ services:
       - traefik.http.services.grafana.loadbalancer.healthcheck.path=/api/health
 
       # Middlewares
-      - traefik.http.routers.grafana.middlewares=grafana-headers,grafana-rate #,grafana@docker #,grafana-retry #,grafana-compress
+      - traefik.http.routers.grafana.middlewares=grafana-headers@docker,grafana-rate@docker,grafana-retry@docker,grafana-compress@docker,grafana-errors@docker
       # Security headers
       - traefik.http.middlewares.grafana-headers.headers.SSLRedirect=true
       - traefik.http.middlewares.grafana-headers.headers.STSSeconds=315360000
-      #- traefik.http.middlewares.grafana-headers.headers.stsSeconds=315360000
+      - traefik.http.middlewares.grafana-headers.headers.stsSeconds=315360000
       - traefik.http.middlewares.grafana-headers.headers.browserXssFilter=true
       - traefik.http.middlewares.grafana-headers.headers.contentTypeNosniff=true
       - traefik.http.middlewares.grafana-headers.headers.frameDeny=true
@@ -417,7 +428,7 @@ services:
       - traefik.http.middlewares.grafana-rate.ratelimit.period=3s
       # Retry & compression
       - traefik.http.middlewares.grafana-retry.retry.attempts=3
-      #- traefik.http.middlewares.grafana-compress.compress=false
+      - traefik.http.middlewares.grafana-compress.compress=false
       #  Router para métricas (Prometheus) 
       #- traefik.http.routers.grafana-metrics.rule=Host(`dashboard.${DOMAIN}`)&& !PathPrefix(`/metrics`) # && !PathPrefix(`/healthz`)
       #- traefik.http.routers.grafana-metrics.entrypoints=websecure
@@ -427,10 +438,6 @@ services:
 
       ############################################################
       # Aplica middleware de tratamento de erros ao router HTTPS
-      ############################################################
-      - traefik.http.routers.grafana.middlewares=grafana-errors
-
-      ############################################################
       # Middleware de erro: em caso de status 4xx/5xx, redireciona
       # o usuário para a página principal "/" do Grafana.
       ############################################################
@@ -446,7 +453,7 @@ services:
     
   cadvisor:
     profiles: ["monitoring"]
-    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    image: gcr.io/cadvisor/cadvisor:v0.52.1 #v0.49.1
     container_name: cadvisor
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
@@ -476,8 +483,8 @@ services:
 
   node-exporter:
     profiles: ["monitoring"]
-    #pid: "host"
-    image: prom/node-exporter:v1.10.2
+    pid: "host"
+    image: prom/node-exporter:v1.10.2 #v1.8.2
     container_name: node_exporter
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
@@ -496,7 +503,7 @@ services:
       - service=nodeexporter
       - env=production
  
-  loki:
+  loki:   # Add logs colector 
     profiles: ["monitoring"]
     image: grafana/loki:3.6.10
     container_name: loki
@@ -524,7 +531,7 @@ services:
       - service=loki
       - env=production
 
-  promtail:
+  promtail: # Add logs colector
     profiles: ["monitoring"]
     #user: "1000:1000"
     user: "0:0"
@@ -550,7 +557,7 @@ services:
       - service=promtail
       - env=production
 
-  docker-socket-proxy:
+  docker-socket-proxy: # security
     image: tecnativa/docker-socket-proxy:0.5.0
     container_name: docker-socket-proxy
     restart: unless-stopped
